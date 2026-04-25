@@ -1,0 +1,37 @@
+plugins {
+    id 'java'
+    id 'org.jetbrains.intellij' version '1.17.4'
+}
+
+group = 'com.example.bootstarter'
+version = '0.1.0'
+
+repositories {
+    mavenCentral()
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+dependencies {
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
+}
+
+intellij {
+    version = '2024.1'
+    type = 'IC'
+    plugins = []
+}
+
+patchPluginXml {
+    sinceBuild = '241'
+    untilBuild = '251.*'
+}
+
+tasks.test {
+    useJUnitPlatform()
+}
+

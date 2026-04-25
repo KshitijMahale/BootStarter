@@ -1,0 +1,27 @@
+<idea-plugin>
+    <id>com.example.bootstarter.community</id>
+    <name>BootStarter Community</name>
+    <vendor email="you@example.com">Your Name</vendor>
+
+    <description>
+        Generate Spring Boot projects directly in IntelliJ IDEA Community Edition.
+    </description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <notificationGroup id="SpringBootCommunityNotifications"
+                           displayType="BALLOON"
+                           isLogByDefault="true"/>
+    </extensions>
+
+    <actions>
+        <action id="SpringBootCommunity.NewProjectAction"
+                class="com.example.bootstarter.action.SpringBootProjectAction"
+                text="Spring Boot Project (Community)"
+                description="Generate a Spring Boot project in the current directory">
+            <add-to-group group-id="NewGroup" anchor="last"/>
+        </action>
+    </actions>
+</idea-plugin>
+

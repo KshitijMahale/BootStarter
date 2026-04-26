@@ -18,7 +18,7 @@
     <actions>
         <action id="SpringBootCommunity.NewProjectAction"
                 class="com.example.bootstarter.action.SpringBootProjectAction"
-                text="Spring Boot Project (Community)"
+                text="BootStarter - Initialize Your Spring Boot Project"
                 description="Generate a Spring Boot project in the current directory">
             <add-to-group group-id="NewGroup" anchor="last"/>
         </action>

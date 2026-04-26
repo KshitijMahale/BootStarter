@@ -11,8 +11,12 @@ import org.jetbrains.annotations.NotNull;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class SpringBootProjectGenerationTask extends Task.Backgroundable {
+
+    private static final Pattern JSON_MESSAGE_PATTERN = Pattern.compile("\"message\"\\s*:\\s*\"([^\"]+)\"");
 
     private final Project project;
     private final VirtualFile projectRoot;
@@ -29,7 +33,7 @@ public class SpringBootProjectGenerationTask extends Task.Backgroundable {
                                            VirtualFile projectRoot,
                                            SpringBootProjectRequest request,
                                            ConflictPolicy conflictPolicy) {
-        super(project, "Generating Spring Boot Project", true);
+        super(project, "Generating Spring Boot project", true);
         this.project = project;
         this.projectRoot = projectRoot;
         this.request = request;
@@ -42,13 +46,14 @@ public class SpringBootProjectGenerationTask extends Task.Backgroundable {
         try {
             indicator.setIndeterminate(false);
 
-            indicator.setText("Building Spring Initializr request...");
+            indicator.setText("Building spring initializr request...");
             indicator.setFraction(0.1);
             String url = requestBuilder.buildUrl(request);
 
             indicator.setText("Downloading starter ZIP...");
             indicator.setFraction(0.3);
-            byte[] zip = client.downloadStarterZip(url);
+            DownloadResult downloadResult = downloadWithBootVersionFallback(url, indicator);
+            byte[] zip = downloadResult.zip;
 
             indicator.setText("Extracting project...");
             indicator.setFraction(0.5);
@@ -70,14 +75,74 @@ public class SpringBootProjectGenerationTask extends Task.Backgroundable {
             refreshService.refresh(project, projectRoot);
 
             indicator.setFraction(1.0);
-            NotificationUtil.info(project, "Spring Boot project generated successfully.");
+            if (downloadResult.usedFallback) {
+                NotificationUtil.info(project, "Spring Boot project generated successfully using server default Boot version.");
+            } else {
+                NotificationUtil.info(project, "Spring Boot project generated successfully.");
+            }
         } catch (Exception ex) {
-            NotificationUtil.error(project, "Failed to generate Spring Boot project: " + ex.getMessage());
+            NotificationUtil.error(project, "Failed to generate Spring Boot project: " + toUserMessage(ex));
         } finally {
             if (extractedPath != null) {
                 cleanupSilently(extractedPath.getParent());
             }
         }
+    }
+
+    private DownloadResult downloadWithBootVersionFallback(String initialUrl,
+                                                           ProgressIndicator indicator) throws IOException, InterruptedException {
+        try {
+            return new DownloadResult(client.downloadStarterZip(initialUrl), false);
+        } catch (SpringInitializrHttpException ex) {
+            if (shouldRetryWithoutBootVersion(ex)) {
+                indicator.setText("Selected Boot version is unsupported. Retrying with server default...");
+                SpringBootProjectRequest retryRequest = copyRequestWithoutBootVersion(request);
+                String fallbackUrl = requestBuilder.buildUrl(retryRequest);
+                return new DownloadResult(client.downloadStarterZip(fallbackUrl), true);
+            }
+            throw ex;
+        }
+    }
+
+    private boolean shouldRetryWithoutBootVersion(SpringInitializrHttpException ex) {
+        if (ex.getStatusCode() != 400) {
+            return false;
+        }
+        String body = ex.getResponseBody();
+        return body != null && body.contains("Invalid Spring Boot version");
+    }
+
+    private SpringBootProjectRequest copyRequestWithoutBootVersion(SpringBootProjectRequest source) {
+        SpringBootProjectRequest copy = new SpringBootProjectRequest();
+        copy.setType(source.getType());
+        copy.setLanguage(source.getLanguage());
+        copy.setSpringBootVersion(null);
+        copy.setGroupId(source.getGroupId());
+        copy.setArtifactId(source.getArtifactId());
+        copy.setName(source.getName());
+        copy.setPackageName(source.getPackageName());
+        copy.setPackaging(source.getPackaging());
+        copy.setJavaVersion(source.getJavaVersion());
+        copy.setDependencies(source.getDependencies());
+        return copy;
+    }
+
+    private String toUserMessage(Exception ex) {
+        if (ex instanceof SpringInitializrHttpException httpEx) {
+            String parsedMessage = extractMessageFromJson(httpEx.getResponseBody());
+            if (parsedMessage != null) {
+                return "Spring Initializr error (HTTP " + httpEx.getStatusCode() + "): " + parsedMessage;
+            }
+            return "Spring Initializr error (HTTP " + httpEx.getStatusCode() + ").";
+        }
+        return ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
+    }
+
+    private String extractMessageFromJson(String responseBody) {
+        if (responseBody == null || responseBody.isBlank()) return null;
+        Matcher matcher = JSON_MESSAGE_PATTERN.matcher(responseBody);
+        if (!matcher.find()) return null;
+        return matcher.group(1).replace("\\\"", "\"");
     }
 
     private VirtualFile resolveSingleTopFolder(VirtualFile extractedRoot) {
@@ -101,5 +166,14 @@ public class SpringBootProjectGenerationTask extends Task.Backgroundable {
         } catch (IOException ignored) {
         }
     }
-}
 
+    private static class DownloadResult {
+        private final byte[] zip;
+        private final boolean usedFallback;
+
+        private DownloadResult(byte[] zip, boolean usedFallback) {
+            this.zip = zip;
+            this.usedFallback = usedFallback;
+        }
+    }
+}

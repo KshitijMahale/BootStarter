@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class SpringInitializrRequestBuilderTest {
@@ -14,7 +15,7 @@ class SpringInitializrRequestBuilderTest {
         SpringBootProjectRequest r = new SpringBootProjectRequest();
         r.setType("maven-project");
         r.setLanguage("java");
-        r.setSpringBootVersion("3.3.5");
+        r.setSpringBootVersion("3.5.0");
         r.setGroupId("com.example");
         r.setArtifactId("demo");
         r.setName("demo");
@@ -28,6 +29,20 @@ class SpringInitializrRequestBuilderTest {
         assertTrue(url.startsWith("https://start.spring.io/starter.zip?"));
         assertTrue(url.contains("dependencies=web%2Cdata-jpa"));
         assertTrue(url.contains("type=maven-project"));
+        assertTrue(url.contains("bootVersion=3.5.0"));
+    }
+
+    @Test
+    void omitsBootVersionWhenNotSpecified() {
+        SpringBootProjectRequest r = new SpringBootProjectRequest();
+        r.setType("maven-project");
+        r.setLanguage("java");
+        r.setSpringBootVersion(null);
+        r.setGroupId("com.example");
+        r.setArtifactId("demo");
+
+        String url = new SpringInitializrRequestBuilder().buildUrl(r);
+
+        assertFalse(url.contains("bootVersion="));
     }
 }
-

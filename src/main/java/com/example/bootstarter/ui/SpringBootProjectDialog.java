@@ -8,15 +8,19 @@ import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.DialogWrapper;
 import com.intellij.openapi.ui.ValidationInfo;
-import com.intellij.ui.components.JBList;
 import com.intellij.ui.components.JBScrollPane;
 import org.jetbrains.annotations.Nullable;
+
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
 import javax.swing.*;
 import java.awt.*;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.LinkedHashSet;
+import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -42,8 +46,12 @@ public class SpringBootProjectDialog extends DialogWrapper {
     private final JComboBox<String> projectTypeBox = new JComboBox<>();
     private final JComboBox<String> languageBox = new JComboBox<>();
 
+    private final JTextField dependencySearchField = new JTextField();
+    private final JTextField customDependencyIdsField = new JTextField();
+    private final JPanel dependencyCheckboxPanel = new JPanel();
+
     private final Map<String, String> dependencyLabelToId = new LinkedHashMap<>();
-    private final JBList<String> dependencyList;
+    private final Set<String> selectedDependencyIds = new LinkedHashSet<>();
     private final Project project;
     private final SpringInitializrMetadataService metadataService = new SpringInitializrMetadataService();
 
@@ -53,10 +61,7 @@ public class SpringBootProjectDialog extends DialogWrapper {
         setTitle("BootStarter - Initialize Your Spring Boot Project");
 
         applyFallbackOptions();
-
-        dependencyList = new JBList<>(dependencyLabelToId.keySet().toArray(new String[0]));
-        dependencyList.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION);
-        dependencyList.setVisibleRowCount(6);
+        setupDependencyUi();
 
         init();
         loadMetadataAsync();
@@ -80,6 +85,23 @@ public class SpringBootProjectDialog extends DialogWrapper {
         addRow(panel, gbc, y++, "Spring Boot Version", bootVersionBox);
         addRow(panel, gbc, y++, "Project Type", projectTypeBox);
         addRow(panel, gbc, y++, "Language", languageBox);
+        addRow(panel, gbc, y++, "Find Dependency", dependencySearchField);
+
+        JPanel dependencyActions = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        JButton selectAllButton = new JButton("Select All");
+        JButton clearButton = new JButton("Clear");
+        selectAllButton.addActionListener(e -> {
+            selectedDependencyIds.clear();
+            selectedDependencyIds.addAll(dependencyLabelToId.values());
+            renderDependencyCheckboxes();
+        });
+        clearButton.addActionListener(e -> {
+            selectedDependencyIds.clear();
+            renderDependencyCheckboxes();
+        });
+        dependencyActions.add(selectAllButton);
+        dependencyActions.add(clearButton);
+        addRow(panel, gbc, y++, "Dependency Actions", dependencyActions);
 
         gbc.gridx = 0;
         gbc.gridy = y;
@@ -90,10 +112,23 @@ public class SpringBootProjectDialog extends DialogWrapper {
         gbc.weightx = 1.0;
         gbc.fill = GridBagConstraints.BOTH;
         gbc.weighty = 1.0;
-        panel.add(new JBScrollPane(dependencyList), gbc);
+        panel.add(new JBScrollPane(dependencyCheckboxPanel), gbc);
 
-        panel.setPreferredSize(new Dimension(520, 420));
+        addRow(panel, gbc, ++y, "Custom IDs",
+                labeledFieldWithHint(customDependencyIdsField, "Comma-separated ids, e.g. redis,amqp,mysql"));
+
+        panel.setPreferredSize(new Dimension(620, 520));
         return panel;
+    }
+
+    private JComponent labeledFieldWithHint(JTextField textField, String hint) {
+        textField.setToolTipText(hint);
+        JPanel wrapper = new JPanel(new BorderLayout(0, 4));
+        wrapper.add(textField, BorderLayout.CENTER);
+        JLabel note = new JLabel(hint);
+        note.setForeground(UIManager.getColor("Label.disabledForeground"));
+        wrapper.add(note, BorderLayout.SOUTH);
+        return wrapper;
     }
 
     private void addRow(JPanel panel, GridBagConstraints gbc, int y, String label, JComponent comp) {
@@ -134,10 +169,9 @@ public class SpringBootProjectDialog extends DialogWrapper {
         req.setType((String) projectTypeBox.getSelectedItem());
         req.setLanguage((String) languageBox.getSelectedItem());
 
-        List<String> deps = dependencyList.getSelectedValuesList().stream()
-                .map(dependencyLabelToId::get)
-                .collect(Collectors.toList());
-        req.setDependencies(deps);
+        Set<String> deps = new LinkedHashSet<>(selectedDependencyIds);
+        deps.addAll(parseCustomDependencyIds(customDependencyIdsField.getText()));
+        req.setDependencies(new ArrayList<>(deps));
 
         return req;
     }
@@ -159,11 +193,73 @@ public class SpringBootProjectDialog extends DialogWrapper {
         dependencyLabelToId.put("DevTools", "devtools");
     }
 
+    private void setupDependencyUi() {
+        dependencyCheckboxPanel.setLayout(new BoxLayout(dependencyCheckboxPanel, BoxLayout.Y_AXIS));
+        dependencySearchField.setToolTipText("Search by dependency name or id");
+        dependencySearchField.getDocument().addDocumentListener(new DocumentListener() {
+            @Override
+            public void insertUpdate(DocumentEvent e) { renderDependencyCheckboxes(); }
+
+            @Override
+            public void removeUpdate(DocumentEvent e) { renderDependencyCheckboxes(); }
+
+            @Override
+            public void changedUpdate(DocumentEvent e) { renderDependencyCheckboxes(); }
+        });
+        renderDependencyCheckboxes();
+    }
+
+    private void renderDependencyCheckboxes() {
+        String filter = dependencySearchField.getText() == null
+                ? ""
+                : dependencySearchField.getText().trim().toLowerCase();
+
+        dependencyCheckboxPanel.removeAll();
+        int count = 0;
+        for (Map.Entry<String, String> entry : dependencyLabelToId.entrySet()) {
+            String label = entry.getKey();
+            String id = entry.getValue();
+            if (!matchesFilter(filter, label, id)) {
+                continue;
+            }
+
+            JCheckBox checkBox = new JCheckBox(label);
+            checkBox.setToolTipText("Dependency id: " + id);
+            checkBox.setSelected(selectedDependencyIds.contains(id));
+            checkBox.addActionListener(e -> {
+                if (checkBox.isSelected()) {
+                    selectedDependencyIds.add(id);
+                } else {
+                    selectedDependencyIds.remove(id);
+                }
+            });
+            dependencyCheckboxPanel.add(checkBox);
+            count++;
+        }
+
+        if (count == 0) {
+            JLabel empty = new JLabel("No dependencies found for current filter.");
+            empty.setForeground(UIManager.getColor("Label.disabledForeground"));
+            dependencyCheckboxPanel.add(empty);
+        }
+
+        dependencyCheckboxPanel.revalidate();
+        dependencyCheckboxPanel.repaint();
+    }
+
+    private boolean matchesFilter(String filter, String label, String id) {
+        if (filter.isEmpty()) return true;
+        return label.toLowerCase().contains(filter) || id.toLowerCase().contains(filter);
+    }
+
     private void loadMetadataAsync() {
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             try {
                 SpringInitializrMetadata metadata = metadataService.fetchMetadata();
-                ApplicationManager.getApplication().invokeLater(() -> applyMetadata(metadata));
+                ApplicationManager.getApplication().invokeLater(() -> {
+                    if (isDisposed()) return;
+                    applyMetadata(metadata);
+                });
             } catch (Exception ignored) {
                 if (project != null) {
                     ApplicationManager.getApplication().invokeLater(() ->
@@ -175,26 +271,55 @@ public class SpringBootProjectDialog extends DialogWrapper {
     }
 
     private void applyMetadata(SpringInitializrMetadata metadata) {
-        setComboItems(packagingBox, fallbackIfEmpty(metadata.getPackagings(), FALLBACK_PACKAGING), "jar");
-        setComboItems(javaVersionBox, fallbackIfEmpty(metadata.getJavaVersions(), FALLBACK_JAVA), "17");
-        setComboItems(projectTypeBox, fallbackIfEmpty(metadata.getTypes(), FALLBACK_TYPES), "maven-project");
-        setComboItems(languageBox, filterLanguage(fallbackIfEmpty(metadata.getLanguages(), FALLBACK_LANGUAGE)), "java");
+        String currentPackaging = (String) packagingBox.getSelectedItem();
+        String currentJavaVersion = (String) javaVersionBox.getSelectedItem();
+        String currentProjectType = (String) projectTypeBox.getSelectedItem();
+        String currentLanguage = (String) languageBox.getSelectedItem();
+        String currentBootVersion = (String) bootVersionBox.getSelectedItem();
+        Set<String> previousSelectedDependencyIds = new LinkedHashSet<>(selectedDependencyIds);
+
+        setComboItems(packagingBox, fallbackIfEmpty(metadata.getPackagings(), FALLBACK_PACKAGING),
+                currentPackaging != null ? currentPackaging : "jar");
+        setComboItems(javaVersionBox, fallbackIfEmpty(metadata.getJavaVersions(), FALLBACK_JAVA),
+                currentJavaVersion != null ? currentJavaVersion : "17");
+        setComboItems(projectTypeBox, fallbackIfEmpty(metadata.getTypes(), FALLBACK_TYPES),
+                currentProjectType != null ? currentProjectType : "maven-project");
+        setComboItems(languageBox, filterLanguage(fallbackIfEmpty(metadata.getLanguages(), FALLBACK_LANGUAGE)),
+                currentLanguage != null ? currentLanguage : "java");
 
         List<String> boot = new ArrayList<>();
         boot.add(SERVER_DEFAULT_BOOT_LABEL);
         boot.addAll(metadata.getBootVersions());
-        setComboItems(bootVersionBox, fallbackIfEmpty(boot, FALLBACK_BOOT), SERVER_DEFAULT_BOOT_LABEL);
+        setComboItems(bootVersionBox, fallbackIfEmpty(boot, FALLBACK_BOOT),
+                currentBootVersion != null ? currentBootVersion : SERVER_DEFAULT_BOOT_LABEL);
 
         if (!metadata.getDependencyLabelToId().isEmpty()) {
             dependencyLabelToId.clear();
             dependencyLabelToId.putAll(metadata.getDependencyLabelToId());
-            dependencyList.setListData(dependencyLabelToId.keySet().toArray(new String[0]));
+            selectedDependencyIds.clear();
+            Set<String> availableIds = new LinkedHashSet<>(dependencyLabelToId.values());
+            for (String id : previousSelectedDependencyIds) {
+                if (availableIds.contains(id)) {
+                    selectedDependencyIds.add(id);
+                }
+            }
+            renderDependencyCheckboxes();
         }
+    }
+
+    private List<String> parseCustomDependencyIds(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return List.of();
+        }
+        return List.of(raw.split("[,;\\s]+")).stream()
+                .map(String::trim)
+                .filter(s -> !s.isBlank())
+                .collect(Collectors.toList());
     }
 
     private List<String> filterLanguage(List<String> values) {
         List<String> javaOnly = values.stream()
-                .filter(v -> "java".equalsIgnoreCase(v))
+                .filter("java"::equalsIgnoreCase)
                 .collect(Collectors.toList());
         if (!javaOnly.isEmpty()) return javaOnly;
         return List.of("java");

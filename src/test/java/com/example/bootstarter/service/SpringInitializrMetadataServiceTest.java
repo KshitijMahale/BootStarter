@@ -72,4 +72,23 @@ class SpringInitializrMetadataServiceTest {
         assertTrue(metadata.getDependencyLabelToId().containsKey("Messaging"));
         assertTrue(metadata.getDependencyLabelToId().containsKey("Messaging (messaging)"));
     }
+
+    @Test
+    void parsesFlatDependenciesCatalogPayload() {
+        String json = """
+                {
+                  "dependencies": {
+                    "web": {"name": "Spring Web"},
+                    "websocket": {"name": "WebSocket"},
+                    "redis": {"id": "redis", "name": "Spring Data Redis"}
+                  }
+                }
+                """;
+
+        var dependencies = SpringInitializrMetadataService.parseDependencyCatalog(json);
+
+        assertEquals("web", dependencies.get("Spring Web"));
+        assertEquals("websocket", dependencies.get("WebSocket"));
+        assertEquals("redis", dependencies.get("Spring Data Redis"));
+    }
 }

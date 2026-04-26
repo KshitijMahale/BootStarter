@@ -3,12 +3,14 @@ package com.example.bootstarter.service;
 import com.example.bootstarter.model.SpringBootProjectRequest;
 import com.example.bootstarter.util.NotificationUtil;
 import com.intellij.openapi.progress.ProgressIndicator;
+import com.intellij.openapi.progress.ProcessCanceledException;
 import com.intellij.openapi.progress.Task;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.vfs.VirtualFile;
 import org.jetbrains.annotations.NotNull;
 
 import java.io.IOException;
+import java.net.http.HttpTimeoutException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.regex.Matcher;
@@ -33,7 +35,7 @@ public class SpringBootProjectGenerationTask extends Task.Backgroundable {
                                            VirtualFile projectRoot,
                                            SpringBootProjectRequest request,
                                            ConflictPolicy conflictPolicy) {
-        super(project, "Generating Spring Boot project", true);
+        super(project, "Generating spring boot project", true);
         this.project = project;
         this.projectRoot = projectRoot;
         this.request = request;
@@ -45,19 +47,23 @@ public class SpringBootProjectGenerationTask extends Task.Backgroundable {
         Path extractedPath = null;
         try {
             indicator.setIndeterminate(false);
+            indicator.checkCanceled();
 
             indicator.setText("Building spring initializr request...");
             indicator.setFraction(0.1);
             String url = requestBuilder.buildUrl(request);
+            indicator.checkCanceled();
 
             indicator.setText("Downloading starter ZIP...");
             indicator.setFraction(0.3);
             DownloadResult downloadResult = downloadWithBootVersionFallback(url, indicator);
             byte[] zip = downloadResult.zip;
+            indicator.checkCanceled();
 
             indicator.setText("Extracting project...");
             indicator.setFraction(0.5);
             extractedPath = extractionService.extractToTemp(zip);
+            indicator.checkCanceled();
 
             indicator.setText("Copying files into current project...");
             indicator.setFraction(0.7);
@@ -68,11 +74,13 @@ public class SpringBootProjectGenerationTask extends Task.Backgroundable {
             }
 
             VirtualFile actualProjectRoot = resolveSingleTopFolder(extractedVf);
-            copyService.copyRecursively(project, actualProjectRoot, projectRoot, conflictPolicy);
+            copyService.copyRecursively(project, actualProjectRoot, projectRoot, conflictPolicy, indicator);
+            indicator.checkCanceled();
 
             indicator.setText("Refreshing project...");
             indicator.setFraction(0.9);
             refreshService.refresh(project, projectRoot);
+            indicator.checkCanceled();
 
             indicator.setFraction(1.0);
             if (downloadResult.usedFallback) {
@@ -80,6 +88,8 @@ public class SpringBootProjectGenerationTask extends Task.Backgroundable {
             } else {
                 NotificationUtil.info(project, "Spring Boot project generated successfully.");
             }
+        } catch (ProcessCanceledException canceled) {
+            NotificationUtil.info(project, "Spring Boot project generation canceled.");
         } catch (Exception ex) {
             NotificationUtil.error(project, "Failed to generate Spring Boot project: " + toUserMessage(ex));
         } finally {
@@ -91,10 +101,12 @@ public class SpringBootProjectGenerationTask extends Task.Backgroundable {
 
     private DownloadResult downloadWithBootVersionFallback(String initialUrl,
                                                            ProgressIndicator indicator) throws IOException, InterruptedException {
+        indicator.checkCanceled();
         try {
             return new DownloadResult(client.downloadStarterZip(initialUrl), false);
         } catch (SpringInitializrHttpException ex) {
             if (shouldRetryWithoutBootVersion(ex)) {
+                indicator.checkCanceled();
                 indicator.setText("Selected Boot version is unsupported. Retrying with server default...");
                 SpringBootProjectRequest retryRequest = copyRequestWithoutBootVersion(request);
                 String fallbackUrl = requestBuilder.buildUrl(retryRequest);
@@ -128,6 +140,9 @@ public class SpringBootProjectGenerationTask extends Task.Backgroundable {
     }
 
     private String toUserMessage(Exception ex) {
+        if (ex instanceof HttpTimeoutException) {
+            return "Request to Spring Initializr timed out. Check your connection and try again.";
+        }
         if (ex instanceof SpringInitializrHttpException httpEx) {
             String parsedMessage = extractMessageFromJson(httpEx.getResponseBody());
             if (parsedMessage != null) {

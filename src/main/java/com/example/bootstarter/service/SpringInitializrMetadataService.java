@@ -24,8 +24,17 @@ public class SpringInitializrMetadataService {
     }
 
     public SpringInitializrMetadata fetchMetadata() throws IOException, InterruptedException {
-        String json = client.fetchMetadataJson();
-        return parseMetadata(json);
+        try {
+            SpringInitializrMetadata metadata = parseMetadata(client.fetchMetadataJson());
+            if (!metadata.getDependencyLabelToId().isEmpty()) {
+                return metadata;
+            }
+            Map<String, String> extraDependencies = parseDependencyCatalog(client.fetchDependenciesJson());
+            return withDependencies(metadata, extraDependencies);
+        } catch (IOException metadataError) {
+            Map<String, String> dependencies = parseDependencyCatalog(client.fetchDependenciesJson());
+            return new SpringInitializrMetadata(List.of(), List.of(), List.of(), List.of(), List.of(), dependencies);
+        }
     }
 
     static SpringInitializrMetadata parseMetadata(String json) {
@@ -65,28 +74,61 @@ public class SpringInitializrMetadataService {
         if (section == null) return result;
 
         JsonArray groups = getValuesArray(section);
-        if (groups == null) return result;
+        if (groups != null) {
+            for (JsonElement groupEl : groups) {
+                JsonObject group = groupEl.getAsJsonObject();
+                JsonArray dependencies = getValuesArray(group);
+                if (dependencies == null) continue;
 
-        for (JsonElement groupEl : groups) {
-            JsonObject group = groupEl.getAsJsonObject();
-            JsonArray dependencies = getValuesArray(group);
-            if (dependencies == null) continue;
-
-            for (JsonElement depEl : dependencies) {
-                JsonObject dep = depEl.getAsJsonObject();
-                String id = getString(dep, "id");
-                String name = getString(dep, "name");
-                if (id == null || id.isBlank()) continue;
-
-                String label = (name == null || name.isBlank()) ? id : name;
-                if (result.containsKey(label)) {
-                    label = label + " (" + id + ")";
+                for (JsonElement depEl : dependencies) {
+                    addDependency(result, depEl.getAsJsonObject(), null);
                 }
-                result.put(label, id);
             }
+            return result;
+        }
+
+        // /dependencies endpoint: "dependencies" is a flat object keyed by id.
+        for (Map.Entry<String, JsonElement> entry : section.entrySet()) {
+            if (!entry.getValue().isJsonObject()) continue;
+            addDependency(result, entry.getValue().getAsJsonObject(), entry.getKey());
         }
 
         return result;
+    }
+
+    static Map<String, String> parseDependencyCatalog(String json) {
+        JsonObject root = JsonParser.parseString(json).getAsJsonObject();
+        return extractDependencies(root);
+    }
+
+    private static SpringInitializrMetadata withDependencies(SpringInitializrMetadata metadata,
+                                                             Map<String, String> dependencies) {
+        if (dependencies == null || dependencies.isEmpty()) {
+            return metadata;
+        }
+        return new SpringInitializrMetadata(
+                metadata.getTypes(),
+                metadata.getLanguages(),
+                metadata.getBootVersions(),
+                metadata.getJavaVersions(),
+                metadata.getPackagings(),
+                dependencies
+        );
+    }
+
+    private static void addDependency(Map<String, String> result, JsonObject dep, String fallbackId) {
+        String id = getString(dep, "id");
+        if (id == null || id.isBlank()) {
+            id = fallbackId;
+        }
+        String name = getString(dep, "name");
+        if (id == null || id.isBlank()) return;
+
+        String label = (name == null || name.isBlank()) ? id : name;
+        if (result.containsKey(label)) {
+            label = label + " (" + id + ")";
+        }
+        result.put(label, id);
     }
 
     private static JsonObject getObject(JsonObject parent, String name) {

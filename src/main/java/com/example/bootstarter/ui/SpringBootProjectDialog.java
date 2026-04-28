@@ -5,6 +5,7 @@ import com.example.bootstarter.service.SpringInitializrMetadata;
 import com.example.bootstarter.service.SpringInitializrMetadataService;
 import com.example.bootstarter.util.NotificationUtil;
 import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.progress.ProcessCanceledException;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.DialogWrapper;
 import com.intellij.openapi.ui.ValidationInfo;
@@ -16,6 +17,7 @@ import javax.swing.event.DocumentListener;
 import javax.swing.*;
 import java.awt.*;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -25,13 +27,25 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 public class SpringBootProjectDialog extends DialogWrapper {
-    private static final String SERVER_DEFAULT_BOOT_LABEL = "(Server Default)";
+    private static final String SERVER_DEFAULT_LABEL = "(Server Default)";
     private static final Pattern JAVA_PACKAGE_PATTERN =
             Pattern.compile("^[a-zA-Z_]\\w*(\\.[a-zA-Z_]\\w*)*$");
 
     private static final List<String> FALLBACK_PACKAGING = List.of("jar", "war");
-    private static final List<String> FALLBACK_JAVA = List.of("17", "21");
-    private static final List<String> FALLBACK_BOOT = List.of(SERVER_DEFAULT_BOOT_LABEL, "3.5.0", "3.4.6");
+    private static final List<String> FALLBACK_JAVA = List.of(
+            SERVER_DEFAULT_LABEL,
+            "26",
+            "25",
+            "21",
+            "17"
+    );
+    private static final List<String> FALLBACK_BOOT = List.of(
+            SERVER_DEFAULT_LABEL,
+            "4.1.0.BUILD-SNAPSHOT",
+            "4.1.0.RC1",
+            "4.0.6.RELEASE",
+            "3.5.14.RELEASE"
+    );
     private static final List<String> FALLBACK_TYPES = List.of("maven-project", "gradle-project");
     private static final List<String> FALLBACK_LANGUAGE = List.of("java");
 
@@ -114,14 +128,14 @@ public class SpringBootProjectDialog extends DialogWrapper {
         gbc.weighty = 1.0;
         panel.add(new JBScrollPane(dependencyCheckboxPanel), gbc);
 
-        addRow(panel, gbc, ++y, "Custom IDs",
-                labeledFieldWithHint(customDependencyIdsField, "Comma-separated ids, e.g. redis,amqp,mysql"));
+        addRow(panel, gbc, ++y, "Custom IDs", customIdsFieldWithHint(customDependencyIdsField));
 
         panel.setPreferredSize(new Dimension(620, 520));
         return panel;
     }
 
-    private JComponent labeledFieldWithHint(JTextField textField, String hint) {
+    private JComponent customIdsFieldWithHint(JTextField textField) {
+        String hint = "Comma-separated ids, e.g. redis,amqp,mysql";
         textField.setToolTipText(hint);
         JPanel wrapper = new JPanel(new BorderLayout(0, 4));
         wrapper.add(textField, BorderLayout.CENTER);
@@ -164,8 +178,8 @@ public class SpringBootProjectDialog extends DialogWrapper {
         req.setName(nameField.getText().trim());
         req.setPackageName(packageNameField.getText().trim());
         req.setPackaging((String) packagingBox.getSelectedItem());
-        req.setJavaVersion((String) javaVersionBox.getSelectedItem());
-        req.setSpringBootVersion(normalizeBlank((String) bootVersionBox.getSelectedItem()));
+        req.setJavaVersion(normalizeServerDefault((String) javaVersionBox.getSelectedItem()));
+        req.setSpringBootVersion(normalizeServerDefault((String) bootVersionBox.getSelectedItem()));
         req.setType((String) projectTypeBox.getSelectedItem());
         req.setLanguage((String) languageBox.getSelectedItem());
 
@@ -178,8 +192,8 @@ public class SpringBootProjectDialog extends DialogWrapper {
 
     private void applyFallbackOptions() {
         setComboItems(packagingBox, FALLBACK_PACKAGING, "jar");
-        setComboItems(javaVersionBox, FALLBACK_JAVA, "17");
-        setComboItems(bootVersionBox, FALLBACK_BOOT, SERVER_DEFAULT_BOOT_LABEL);
+        setComboItems(javaVersionBox, FALLBACK_JAVA, SERVER_DEFAULT_LABEL);
+        setComboItems(bootVersionBox, FALLBACK_BOOT, SERVER_DEFAULT_LABEL);
         setComboItems(projectTypeBox, FALLBACK_TYPES, "maven-project");
         setComboItems(languageBox, FALLBACK_LANGUAGE, "java");
 
@@ -255,19 +269,39 @@ public class SpringBootProjectDialog extends DialogWrapper {
     private void loadMetadataAsync() {
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
             try {
+                if (isLifecycleDisposed()) {
+                    return;
+                }
                 SpringInitializrMetadata metadata = metadataService.fetchMetadata();
+                if (isLifecycleDisposed()) {
+                    return;
+                }
                 ApplicationManager.getApplication().invokeLater(() -> {
-                    if (isDisposed()) return;
+                    if (isLifecycleDisposed()) return;
+                    if (metadata.getJavaVersions().isEmpty() || metadata.getBootVersions().isEmpty()) {
+                        NotificationUtil.error(project,
+                                "Spring Initializr metadata did not include Java/Spring Boot versions. " +
+                                        "Using fallback versions.");
+                    }
                     applyMetadata(metadata);
                 });
-            } catch (Exception ignored) {
-                if (project != null) {
+            } catch (ProcessCanceledException ignored) {
+                // Ignore cancellation during IDE/project shutdown.
+            } catch (Exception e) {
+                if (!isLifecycleDisposed()) {
                     ApplicationManager.getApplication().invokeLater(() ->
-                            NotificationUtil.info(project, "Using built-in Spring Initializr defaults (metadata unavailable).")
+                            NotificationUtil.error(project,
+                                    "Failed to load Spring Initializr metadata: " +
+                                            (e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()))
                     );
                 }
             }
         });
+    }
+
+    private boolean isLifecycleDisposed() {
+        var app = ApplicationManager.getApplication();
+        return app == null || app.isDisposed() || isDisposed() || (project != null && project.isDisposed());
     }
 
     private void applyMetadata(SpringInitializrMetadata metadata) {
@@ -279,19 +313,20 @@ public class SpringBootProjectDialog extends DialogWrapper {
         Set<String> previousSelectedDependencyIds = new LinkedHashSet<>(selectedDependencyIds);
 
         setComboItems(packagingBox, fallbackIfEmpty(metadata.getPackagings(), FALLBACK_PACKAGING),
-                currentPackaging != null ? currentPackaging : "jar");
-        setComboItems(javaVersionBox, fallbackIfEmpty(metadata.getJavaVersions(), FALLBACK_JAVA),
-                currentJavaVersion != null ? currentJavaVersion : "17");
-        setComboItems(projectTypeBox, fallbackIfEmpty(metadata.getTypes(), FALLBACK_TYPES),
-                currentProjectType != null ? currentProjectType : "maven-project");
-        setComboItems(languageBox, filterLanguage(fallbackIfEmpty(metadata.getLanguages(), FALLBACK_LANGUAGE)),
-                currentLanguage != null ? currentLanguage : "java");
+                firstNonBlank(currentPackaging, metadata.getDefaultPackaging(), "jar"));
 
-        List<String> boot = new ArrayList<>();
-        boot.add(SERVER_DEFAULT_BOOT_LABEL);
-        boot.addAll(metadata.getBootVersions());
+        List<String> javaOptions = withServerDefaultPrefix(metadata.getJavaVersions(), FALLBACK_JAVA);
+        setComboItems(javaVersionBox, javaOptions,
+                firstNonBlank(nonServerDefault(currentJavaVersion), metadata.getDefaultJavaVersion(), SERVER_DEFAULT_LABEL));
+
+        setComboItems(projectTypeBox, fallbackIfEmpty(metadata.getTypes(), FALLBACK_TYPES),
+                firstNonBlank(currentProjectType, metadata.getDefaultType(), "maven-project"));
+        setComboItems(languageBox, fallbackIfEmpty(metadata.getLanguages(), FALLBACK_LANGUAGE),
+                firstNonBlank(currentLanguage, metadata.getDefaultLanguage(), "java"));
+
+        List<String> boot = withServerDefaultPrefix(metadata.getBootVersions(), FALLBACK_BOOT);
         setComboItems(bootVersionBox, fallbackIfEmpty(boot, FALLBACK_BOOT),
-                currentBootVersion != null ? currentBootVersion : SERVER_DEFAULT_BOOT_LABEL);
+                firstNonBlank(nonServerDefault(currentBootVersion), metadata.getDefaultBootVersion(), SERVER_DEFAULT_LABEL));
 
         if (!metadata.getDependencyLabelToId().isEmpty()) {
             dependencyLabelToId.clear();
@@ -311,22 +346,36 @@ public class SpringBootProjectDialog extends DialogWrapper {
         if (raw == null || raw.isBlank()) {
             return List.of();
         }
-        return List.of(raw.split("[,;\\s]+")).stream()
+        return Arrays.stream(raw.split("[,;\\s]+"))
                 .map(String::trim)
                 .filter(s -> !s.isBlank())
                 .collect(Collectors.toList());
     }
 
-    private List<String> filterLanguage(List<String> values) {
-        List<String> javaOnly = values.stream()
-                .filter("java"::equalsIgnoreCase)
-                .collect(Collectors.toList());
-        if (!javaOnly.isEmpty()) return javaOnly;
-        return List.of("java");
-    }
-
     private List<String> fallbackIfEmpty(List<String> values, List<String> fallback) {
         return values == null || values.isEmpty() ? fallback : values;
+    }
+
+    private List<String> withServerDefaultPrefix(List<String> values, List<String> fallback) {
+        List<String> normalized = fallbackIfEmpty(values, fallback);
+        List<String> result = new ArrayList<>();
+        result.add(SERVER_DEFAULT_LABEL);
+        for (String value : normalized) {
+            if (value == null || value.isBlank() || SERVER_DEFAULT_LABEL.equals(value)) {
+                continue;
+            }
+            result.add(value);
+        }
+        return result;
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.isBlank()) {
+                return value;
+            }
+        }
+        return null;
     }
 
     private void setComboItems(JComboBox<String> comboBox, List<String> values, String preferredValue) {
@@ -339,10 +388,17 @@ public class SpringBootProjectDialog extends DialogWrapper {
         }
     }
 
-    private String normalizeBlank(String value) {
+    private String normalizeServerDefault(String value) {
         if (value == null) return null;
         String trimmed = value.trim();
-        if (SERVER_DEFAULT_BOOT_LABEL.equals(trimmed)) return null;
+        if (SERVER_DEFAULT_LABEL.equals(trimmed)) return null;
         return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private String nonServerDefault(String value) {
+        if (value == null) {
+            return null;
+        }
+        return SERVER_DEFAULT_LABEL.equals(value.trim()) ? null : value;
     }
 }

@@ -3,7 +3,7 @@
 Generates a Spring Boot project directly into the currently opened project directory using Spring Initializr API.
 
 ## Features
-- Menu action: `File -> New -> Spring Boot Project (Community)`
+- Menu action: `File -> New -> BootStarter - Initialize Your Spring Boot Project`
 - Form for project metadata and dependencies
 - Background generation with progress
 - ZIP download + extraction
